@@ -65,7 +65,7 @@ export class CombatSystem {
       }
       
       if (target?.takePunch) {
-        const drop = target.takePunch(player, { tipo: kind, dmg: hit.dmg, knock: hit.knock, stun: hit.stun, derriba: !!hit.derriba, dir: _v.set(fx, 0, fz).clone() });
+        const drop = target.takePunch(player, { tipo: kind, dmg: hit.dmg, knock: hit.knock, stun: hit.stun, derriba: !!hit.derriba, dir: _v.set(fx, 0, fz) });
         (this.audio ?? player.audio)?.playPunchHit?.(hit.peso === 'fuerte');
         if (drop && typeof player.stats?.dinero === 'number') player.stats.dinero += drop;
         this.camera?.shake?.(hit.peso === 'fuerte' ? .35 : .18, HITSTOP_MS / 1000);

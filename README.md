@@ -32,7 +32,7 @@ Esta rama agrega sistemas de enfrentamiento entre el jugador y los peatones. Con
 
 Para los agarres, `H` sujeta a un NPC vivo a menos de 1,4 metros o lo suelta, y `J` lo derriba. El agarre termina como máximo a los tres segundos. Las animaciones actuales reutilizan recursos existentes; todavía no están implementados todos los clips específicos de forcejeo. Tampoco están terminados los agarres iniciados por NPC, la barra de liberación con A/D, la cancelación desde menús ni todas las pruebas de interacción. **Estas mecánicas están en desarrollo y no se ha confirmado su funcionamiento visual completo en navegador.**
 
-Los nuevos sistemas están en `src/systems/CombatSystem.js`, `GrappleSystem.js` y `NpcCombat.js`; las pruebas específicas incluyen `tests/npc-combat.test.js`. Consulta [documentación de combate](docs/combate.md) y [recursos pendientes](docs/combate-recursos-pendientes.md). Los efectos de estas mecánicas reutilizan audio sintetizado; los audios adicionales que solo estén en el PC no se consideran incluidos en la rama publicada.
+Los nuevos sistemas están en `src/systems/CombatSystem.js`, `GrappleSystem.js` y `NpcCombat.js`; las pruebas específicas incluyen `tests/npc-combat.test.js`. Consulta [documentación de combate](docs/combate.md) y [recursos pendientes](docs/combate-recursos-pendientes.md). Los efectos de estas mecánicas reutilizan audio sintetizado; las cinco voces ambientales y de persecución añadidas están incluidas en `public/audio`.
 
 ## Capturas
 

@@ -16,6 +16,7 @@ import { buildSmallBuilding, SMALL_BUILDING } from '../bogota/SmallBuilding.js';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { TILE_SIZE } from '../../utils/constants.js';
+import { pick, rand } from '../../utils/random.js';
 import { Farol } from '../props/Farol.js';
 import { TrafficSignals } from '../bogota/TrafficSignals.js';
 import { signTexture } from '../../utils/signs.js';
@@ -66,7 +67,6 @@ const SHOP_NAMES = [
   ['CHATARRERÍA', 'COMPRAMOS'], ['MINUTOS', 'A TODO OPERADOR'], ['LAVANDERÍA', 'AL INSTANTE'], ['PAPELERÍA', 'FOTOCOPIAS']
 ];
 
-const rand = (a, b) => a + Math.random() * (b - a);
 const _frustum = new THREE.Frustum();
 const _projView = new THREE.Matrix4();
 
@@ -87,7 +87,6 @@ function worldUVs(geo, sx, sy, sz, units) {
   return geo;
 }
 const repeatAll = (t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1, 1); t.anisotropy = 8; t.needsUpdate = true; return t; };
-const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const W = (t) => t * T; // tile → metros (centro del tile)
 
 export class Bogota {

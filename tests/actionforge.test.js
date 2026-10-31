@@ -7,12 +7,10 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { ACTIONFORGE_CLIPS, buildCharacterClips } from '../src/character/actionforge.js';
+import { loadActionForgeBank } from './helpers/actionforge-bank.js';
 
 const path = new URL('../public/models/animaciones-actionforge.glb', import.meta.url);
-async function bank() {
-  const data = fs.readFileSync(path);
-  return new GLTFLoader().parseAsync(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '');
-}
+const bank = () => loadActionForgeBank(path);
 
 test('los FBX de combate se adaptan como Group y producen pistas animadas', async () => {
   const body = await bank();

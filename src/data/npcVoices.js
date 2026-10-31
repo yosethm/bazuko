@@ -42,5 +42,46 @@ export const NPC_VOICE_BANK = {
       audio: '/audio/denleduroporrata.mp3',
       text: '¡Píselo, píselo! ¡Denle duro a ese hijueputa por rata!'
     }
+  ],
+  knockout: [
+    {
+      audio: '/audio/derrota.mp3',
+      text: '¡Derrota!'
+    },
+    {
+      audio: '/audio/ahh.mp3',
+      text: '¡Ahhh!'
+    }
+  ],
+  ambient: [
+    {
+      audio: '/audio/asqueroso.mp3',
+      text: '¡Asqueroso!',
+      gender: 'mujer'
+    },
+    {
+      audio: '/audio/petrista.mp3',
+      text: '¡Petrista!',
+      gender: 'mujer'
+    },
+    {
+      audio: '/audio/locohp.mp3',
+      text: '¡Loco HP!'
+    },
+    {
+      audio: '/audio/hedor.mp3',
+      text: '¡Qué hedor!'
+    }
+  ],
+  theftChase: [
+    {
+      audio: '/audio/peste.mp3',
+      text: '¡Peste!',
+      gender: 'mujer'
+    },
+    {
+      audio: '/audio/encuerenrata.mp3',
+      text: '¡Encuerenrata!'
+    }
   ]
 };

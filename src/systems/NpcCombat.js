@@ -26,7 +26,8 @@ export class NpcCombat {
     this.timer -= dt;
     this.routeTimer -= dt;
     if (this.mob && (this.voiceTimer = (this.voiceTimer ?? 0) - dt) <= 0) {
-      n.speakScenario?.('mob'); this.voiceTimer = 5;
+      n.speakScenario?.(this.robberyChase ? 'theftChase' : 'mob');
+      this.voiceTimer = this.robberyChase ? 9 : 5;
     }
     const d = n._direction.copy(p.position).sub(n.position); d.y = 0;
     const distance = d.length();
@@ -56,7 +57,7 @@ export class NpcCombat {
     } else if (this.state === 'golpear' && this.timer <= 0) {
       if (distance < 1.9 && Math.abs(p.position.y - n.position.y) < 1.2 &&
           p._lastCollisions?.hasClearStrike?.(n.position, p.position) !== false) {
-        if (p.receiveAssaultHit) p.receiveAssaultHit(d.clone().normalize(), 5);
+        if (p.receiveAssaultHit) p.receiveAssaultHit(d.normalize(), 5);
         else if (p.stats) p.stats.salud = Math.max(0, p.stats.salud - (p.isBlocking ? 2 : 5));
         p.audio?.playPunchHit?.();
       }
@@ -112,6 +113,7 @@ export class NpcCombat {
     this.liberarFicha();
     this.age = 0; this.timer = 0; this.activationDelay = 0; this.voiceTimer = 0;
     this.mob = false; this.route = []; this.routeTimer = 0;
+    this.robberyChase = false;
     this.objetivo = null; this.state = 'libre'; this.npc.assaultAction = null;
   }
 }

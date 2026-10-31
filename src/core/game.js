@@ -697,6 +697,7 @@ export class Game {
     this.input.endFrame();
     this.audio.updateSteps(false, false);
     this.audio.setPaused?.(true);
+    this.audio.playPlayerDeath?.(this.player);
     if (this.interaction.boostActive) this.interaction._endBoost();
     const causes = [];
     if (this._deathCause) causes.push(this._deathCause);

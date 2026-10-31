@@ -10,15 +10,11 @@ import {
 
 import { randomLook, DEFAULT_LOOK } from '../character/look.js';
 import { NpcCombat } from '../systems/NpcCombat.js';
+import { pick } from '../utils/random.js';
 
 // ==========================================
 // UTILIDADES
 // ==========================================
-
-const any = (arr) =>
-  Array.isArray(arr) && arr.length
-    ? arr[Math.floor(Math.random() * arr.length)]
-    : null;
 
 // ==========================================
 // BANCO DE VOCES
@@ -28,45 +24,41 @@ const any = (arr) =>
 import { NPC_VOICE_BANK } from '../data/npcVoices.js';
 export { NPC_VOICE_BANK } from '../data/npcVoices.js';
 
-// Memoria para evitar la repetición consecutiva de voces
-const lastVoiceIndices = {};
+const recentVoicePaths = [];
+const voiceLastPlayedAt = new Map();
+const VOICE_REPEAT_DELAY = 8000;
 
-function getRandomVoice(category) {
-  const pool = NPC_VOICE_BANK[category];
-  if (!Array.isArray(pool) || pool.length === 0) return null;
-  if (pool.length === 1) return pool[0];
-
-  const lastIdx = lastVoiceIndices[category];
-  const offset = 1 + Math.floor(Math.random() * (pool.length - 1));
-  const newIdx = lastIdx === undefined ? Math.floor(Math.random() * pool.length) : (lastIdx + offset) % pool.length;
-  lastVoiceIndices[category] = newIdx;
-  return pool[newIdx];
+function getRandomVoice(category, gender) {
+  const pool = NPC_VOICE_BANK[category]?.filter(entry => !entry.gender || entry.gender === gender) ?? [];
+  const now = performance.now();
+  const available = pool.filter(entry => now - (voiceLastPlayedAt.get(entry.audio) ?? -Infinity) >= VOICE_REPEAT_DELAY);
+  const withoutRecent = available.filter(entry => !recentVoicePaths.includes(entry.audio));
+  const entry = pick(withoutRecent.length ? withoutRecent : available);
+  if (!entry) return null;
+  recentVoicePaths.push(entry.audio);
+  if (recentVoicePaths.length > 4) recentVoicePaths.shift();
+  voiceLastPlayedAt.set(entry.audio, now);
+  return entry;
 }
 
 export const NPC_LOD = {
   fullIn: 7,
   fullOut: 10,
+  maxFull: 8,
   animEvery: 20,
   animStop: 40
 };
+const NPC_KNOCKOUT_DURATION = 3.5;
+const NPC_RESPAWN_DELAY = 8;
+const fullCharacterOwners = new Set();
+const fullCharacterPool = [];
+let liveNpcCount = 0;
 
-const BOGOTA_PHRASES = [
-  'Dios lo bendiga, vecino.',
-  'Pilas por la 19 que está caliente.',
-  '¿Tiene una monedita que le sobre?',
-  'Mucho juicio, mi rey.',
-  'Tome 500 para un pan, mijo.',
-  'Qué frío tan berraco hace hoy.',
-  'Pilas con los carros en la Caracas.',
-  'Buenas tardes, vecino.'
-];
-
-const BOGOTA_DIRTY_PHRASES = [
-  '¡Uff, aléjese que huele a caño!',
-  'Vaya al caño a pegarse una lavada.',
-  '¡Paso, paso, no se me pegue!',
-  '¡Gas, qué tufo!'
-];
+function returnFullCharacter(model, dispose = false) {
+  if (!model) return;
+  if (dispose || liveNpcCount === 0) model.dispose?.();
+  else fullCharacterPool.push(model);
+}
 
 const _sphere = new THREE.Sphere(new THREE.Vector3(), 1.4);
 
@@ -93,16 +85,16 @@ export async function randomStreetLook({ gastada = false } = {}) {
 
   look.real = normalizeReal(catalog, {
     sexo,
-    edad: any(['joven', 'adulto', 'adulto', 'mayor']),
-    pelo: any(optionsFor(catalog, 'pelo', sexo))?.id ??
+    edad: pick(['joven', 'adulto', 'adulto', 'mayor']),
+    pelo: pick(optionsFor(catalog, 'pelo', sexo))?.id ??
       DEFAULT_LOOK?.real?.pelo ?? 'ninguno',
     barba: sexo === 'hombre' && Math.random() < 0.7
-      ? any(['descuidada', 'candado', 'larga', 'bigote'])
+      ? pick(['descuidada', 'candado', 'larga', 'bigote'])
       : 'ninguna',
-    ropa: gastada && viejas.length ? any(viejas) : any(ropaOpts),
+    ropa: gastada && viejas.length ? pick(viejas) : pick(ropaOpts),
     calzado: gastada
-      ? any(['tenis-rotos', 'tenis-rotos', 'botas'])
-      : any(optionsFor(catalog, 'calzado', sexo))?.id ?? 'tenis-rotos'
+      ? pick(['tenis-rotos', 'tenis-rotos', 'botas'])
+      : pick(optionsFor(catalog, 'calzado', sexo))?.id ?? 'tenis-rotos'
   });
 
   return look;
@@ -123,6 +115,7 @@ export class Npc {
 
   constructor(scene, position, opts = {}) {
     this._disposed = false;
+    liveNpcCount++;
     this.scene = scene;
     this.home = position.clone();
     this.position = position.clone();
@@ -138,6 +131,7 @@ export class Npc {
     this.routeIndex = 0;
     this._direction = new THREE.Vector3();
     this._nextPosition = new THREE.Vector3();
+    this._wanderTarget = new THREE.Vector3();
 
     this.root = new THREE.Group();
     this.root.position.copy(position);
@@ -155,6 +149,12 @@ export class Npc {
     this.fullChar = null;
     this._fullLoading = null;
     this.character = null;
+    this._characterLoadToken = 0;
+    this._knockoutTimer = 0;
+    this._respawnTimer = 0;
+    this._koDespawned = false;
+    this._respawning = false;
+    this._respawnLoading = null;
 
     this.isSplatted = false;
     this.splatTimer = 0;
@@ -165,6 +165,7 @@ export class Npc {
     this._bubbleEl = null;
     this._bubbleTimer = 0;
     this._lastSpokenTime = 0;
+    this._lastPlayerDistance = Infinity;
     this._lastVoiceTime = 0;
     this._mobVoiceUntil = 0;
     this._projPos = new THREE.Vector3();
@@ -206,18 +207,7 @@ export class Npc {
         gastada: opts.gastada
       });
 
-      const model = await createRealisticCharacter(this.look, {
-        lod: true
-      });
-
-      if (this._disposed) {
-        model.dispose?.();
-        return;
-      }
-
-      this.lodChar = model;
-      this._show(model);
-      this.character.update(Math.random() * 3, { speed: 0 });
+      await this._loadLodCharacter();
     })().catch(error => {
       this.loadError = error;
       console.warn('[Npc] Error cargando personaje:', error);
@@ -227,30 +217,73 @@ export class Npc {
   async preload() {
     await this.ready;
     if (this.loadError) throw this.loadError;
-    await this._loadFull();
+  }
+
+  async _loadLodCharacter() {
+    const token = ++this._characterLoadToken;
+    const model = await createRealisticCharacter(this.look, { lod: true });
+    if (this._disposed || token !== this._characterLoadToken) {
+      model.dispose?.();
+      return null;
+    }
+    this.lodChar = model;
+    this._show(model);
+    model.update(Math.random() * 3, { speed: 0 });
+    return model;
   }
 
   _loadFull() {
     if (this._disposed || this.fullChar) return Promise.resolve();
     if (this._fullLoading) return this._fullLoading;
+    const reusable = fullCharacterPool.pop() ?? null;
+    if (!reusable && fullCharacterOwners.size + fullCharacterPool.length >= NPC_LOD.maxFull) {
+      return Promise.resolve();
+    }
 
+    fullCharacterOwners.add(this);
+    this._wantsFull = true;
     this._fullLoading = this.ready.then(async () => {
-      if (this._disposed || this.loadError || !this.look) return;
+      if (this._disposed || !this._wantsFull || this.loadError || !this.look) {
+        fullCharacterOwners.delete(this);
+        returnFullCharacter(reusable, this._koDespawned);
+        return;
+      }
 
-      const model = await createRealisticCharacter(this.look, {
-        lod: false
-      });
+      const model = reusable
+        ? (await reusable.setLook(this.look), reusable)
+        : await createRealisticCharacter(this.look, { lod: false });
 
-      if (this._disposed) {
-        model.dispose?.();
+      if (this._disposed || !this._wantsFull) {
+        returnFullCharacter(model, this._koDespawned);
+        fullCharacterOwners.delete(this);
       } else {
         this.fullChar = model;
       }
+    }).catch(error => {
+      returnFullCharacter(reusable, this._koDespawned);
+      fullCharacterOwners.delete(this);
+      throw error;
     }).finally(() => {
       this._fullLoading = null;
     });
 
     return this._fullLoading;
+  }
+
+  _releaseFull(dispose = false) {
+    this._wantsFull = false;
+    if (this.fullChar) {
+      if (this.character === this.fullChar) {
+        this.root.remove(this.fullChar.group);
+        this.character = null;
+        if (this.lodChar) this._show(this.lodChar);
+      }
+      returnFullCharacter(this.fullChar, dispose);
+      this.fullChar = null;
+      fullCharacterOwners.delete(this);
+    } else if (!this._fullLoading) {
+      fullCharacterOwners.delete(this);
+    }
   }
 
   _show(char) {
@@ -282,7 +315,7 @@ export class Npc {
       const z = this.home.z + Math.sin(a) * r;
 
       if (this.isWalkable(x, z)) {
-        return new THREE.Vector3(x, 0, z);
+        return this._wanderTarget.set(x, 0, z);
       }
     }
     return null;
@@ -305,14 +338,16 @@ export class Npc {
   // ==========================================
 
   speakScenario(category, force = false) {
-    if (this._disposed || this.hp <= 0) return;
+    const knockoutVoice = category === 'knockout';
+    if (this._disposed || (this.hp <= 0 && !knockoutVoice)) return;
     const now = performance.now();
-    if (this._lastVoiceTime > 0 && now - this._lastVoiceTime < 2500) return;
-    const entry = getRandomVoice(category);
+    if (!force && this._lastVoiceTime > 0 && now - this._lastVoiceTime < 2500) return false;
+    const entry = getRandomVoice(category, this.look?.real?.sexo);
     if (!entry) return;
     this._lastVoiceTime = now;
     this.say(entry.text, 3.5);
-    this.audio?.playNpcVoice?.(entry.audio, this);
+    this.audio?.playNpcVoice?.(entry.audio, this, { allowKnockedOut: knockoutVoice });
+    return true;
   }
 
   // ==========================================
@@ -335,7 +370,7 @@ export class Npc {
           !other._disposed &&
           other.position.distanceTo(this.position) < 12.0
         ) {
-          other.beginAssault(attacker, 'golpe_jab', followerDelay);
+          other.beginAssault(attacker, 'golpe_jab', followerDelay, true);
           followerDelay += .15;
         }
       });
@@ -390,7 +425,7 @@ export class Npc {
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('toast', {
-        detail: { text: any(screams), type: 'warn' }
+        detail: { text: pick(screams), type: 'warn' }
       }));
 
       if (Math.random() < 0.35) {
@@ -476,10 +511,10 @@ export class Npc {
     }
 
     const step = Math.min(dist, this.walkSpeed * dt);
-    const direction = d.clone().normalize();
+    d.normalize();
 
     const next = this._nextPosition.copy(this.position)
-      .addScaledVector(direction, step);
+      .addScaledVector(d, step);
 
     if (!this.isWalkable(next.x, next.z)) {
       this.target = null;
@@ -520,6 +555,16 @@ export class Npc {
   update(dt, ctx = {}) {
     if (this._disposed) return;
     this.audio ??= globalThis.window?.__game?.audio;
+    if (this._respawning) return;
+    if (this._koDespawned) {
+      this._respawnTimer -= dt;
+      if (this._respawnTimer <= 0) this._respawn();
+      return;
+    }
+    if (this.hp <= 0 && this._knockoutTimer > 0) {
+      this._knockoutTimer = Math.max(0, this._knockoutTimer - dt);
+      if (!this._knockoutTimer) this._despawnKnockedOut();
+    }
 
     // SI EL JUGADOR ESTÁ MUERTO O REAPARECIÓ, LIMPIAR HOSTILIDAD
     const playerStats = ctx.playerStats || this.assaultTarget?.stats || globalThis.window?.__game?.stats;
@@ -636,6 +681,8 @@ export class Npc {
 
     const outOfCombat = this.hp <= 0 && this.assaultAction === 'fueraCombate';
 
+    if (ctx.player && dist > NPC_LOD.fullOut) this._releaseFull();
+
     if (!onScreen && !outOfCombat) {
       this._updateSpeech(dt, { ...ctx, player: null });
       if (this._bubbleEl) this._bubbleEl.style.display = 'none';
@@ -643,7 +690,7 @@ export class Npc {
       return;
     }
 
-    this._updateDetail(dist);
+    if (ctx.player) this._updateDetail(dist);
     this._updateSpeech(dt, ctx);
     this._updateUmbrella(ctx.isRaining ?? false);
 
@@ -700,7 +747,7 @@ export class Npc {
   // ATAQUES COLECTIVOS Y LINCHAMIENTO
   // ==========================================
 
-  beginAssault(target, action = 'golpe_jab', delay = 0) {
+  beginAssault(target, action = 'golpe_jab', delay = 0, robberyChase = false) {
     if (!target || this.hp <= 0 || this._disposed) return;
     const player = target.position ? target : { position: target };
     this.fleeTimer = 0; this.target = null; this.route = [];
@@ -710,13 +757,14 @@ export class Npc {
     this.combatAI.timer = delay;
     this.combatAI.activationDelay = delay;
     this.combatAI.mob = true;
+    this.combatAI.robberyChase = robberyChase;
   }
 
   triggerMobAssault(target, isLeader = false) {
     if (!target || this.hp <= 0 || this._disposed) return;
 
-    this.beginAssault(target, 'golpe_jab');
-    this.speakScenario('mob', isLeader);
+    this.beginAssault(target, 'golpe_jab', 0, true);
+    this.speakScenario('theftChase', isLeader);
   }
 
   // ==========================================
@@ -805,9 +853,74 @@ export class Npc {
       this.resetAggro();
       this.assaultAction = 'fueraCombate';
       this.reactionTimer = Infinity;
+      this._knockoutTimer = NPC_KNOCKOUT_DURATION;
       this.velocity.set(0, 0, 0);
-      this.say('Fuera de combate', 3);
+      this.speakScenario('knockout', true);
     }
+  }
+
+  _despawnKnockedOut() {
+    if (this._koDespawned || this._disposed) return;
+    this._koDespawned = true;
+    this._respawnTimer = NPC_RESPAWN_DELAY;
+    this._releaseFull(true);
+    for (const model of fullCharacterPool) model.dispose?.();
+    fullCharacterPool.length = 0;
+    this._characterLoadToken++;
+    this.root.remove(this.character?.group);
+    this.lodChar?.dispose?.();
+    this.lodChar = null;
+    this.fullChar = null;
+    this.character = null;
+    this.root.visible = false;
+    this.healthBar.visible = false;
+    this._bubbleEl?.remove();
+    this._bubbleEl = null;
+    if (this.splatMesh) {
+      this.root.remove(this.splatMesh);
+      this.splatMesh.geometry?.dispose?.();
+      this.splatMesh.material?.dispose?.();
+      this.splatMesh = null;
+    }
+  }
+
+  _respawn() {
+    this.position.copy(this.home);
+    this.position.y = this.groundHeight(this.home.x, this.home.z);
+    this.root.position.copy(this.position);
+    this.root.visible = false;
+    this.hp = this.maxHp;
+    this.healthBar.visible = false;
+    this.healthBar.scale.x = 0.8;
+    this.target = null;
+    this.route = [];
+    this.routeIndex = 0;
+    this.wait = this.navigation ? 0 : Math.random() * 6;
+    this.moving = false;
+    this.velocity.set(0, 0, 0);
+    this.assaultTarget = null;
+    this.assaultTimer = 0;
+    this.assaultAction = null;
+    this.assaultKind = null;
+    this.reactionTimer = 0;
+    this.fleeTimer = 0;
+    this.panicTimer = 0;
+    this.grabbed = false;
+    this._knockoutTimer = 0;
+    this._respawnTimer = 0;
+    this._koDespawned = false;
+    this.loadError = null;
+    this.combatAI.dispose();
+    this._respawning = true;
+    this._respawnLoading = this._loadLodCharacter().then(model => {
+      if (!this._disposed && model) this.root.visible = true;
+    }).catch(error => {
+      this.loadError = error;
+      console.warn('[Npc] Error reapareciendo personaje:', error);
+    }).finally(() => {
+      this._respawning = false;
+      this._respawnLoading = null;
+    });
   }
 
   // ==========================================
@@ -849,16 +962,11 @@ export class Npc {
       this.position.z - ctx.player.z
     );
 
-    if (dist < 2.8 && now - this._lastSpokenTime > 14000) {
+    const passedBy = dist < 2.8 && this._lastPlayerDistance >= 2.8 && this.moving;
+    this._lastPlayerDistance = dist;
+    if (passedBy && (!this._lastSpokenTime || now - this._lastSpokenTime > 14000)) {
       this._lastSpokenTime = now;
-
-      if (Math.random() < 0.5) {
-        const isDirty = (ctx.hygiene ?? 100) < 30;
-        const list = isDirty ? BOGOTA_DIRTY_PHRASES : BOGOTA_PHRASES;
-        const phrase = any(list);
-
-        if (phrase) this.say(phrase);
-      }
+      this.speakScenario('ambient');
     }
   }
 
@@ -905,6 +1013,8 @@ export class Npc {
 
   dispose() {
     if (this._disposed) return;
+    this._characterLoadToken++;
+    this._releaseFull();
     this._disposed = true;
 
     this.healthBar?.material?.dispose?.();
@@ -931,8 +1041,9 @@ export class Npc {
       this.umbrella = null;
     }
 
-    const models = new Set([this.lodChar, this.fullChar]);
+    const models = new Set([this.lodChar]);
     for (const model of models) model?.dispose?.();
+    fullCharacterOwners.delete(this);
 
     if (this.splatMesh) {
       this.root.remove(this.splatMesh);
@@ -942,5 +1053,10 @@ export class Npc {
     }
 
     this.scene.remove(this.root);
+    liveNpcCount--;
+    if (liveNpcCount === 0) {
+      for (const model of fullCharacterPool) model.dispose?.();
+      fullCharacterPool.length = 0;
+    }
   }
 }

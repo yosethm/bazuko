@@ -201,7 +201,7 @@ export class StealSystem {
     } else {
       assaultNpcs.forEach((npc, index) => {
         npc.fleeTimer = 0;
-        npc.beginAssault?.(player, 'golpe_jab', index * .15);
+        npc.beginAssault?.(player, 'golpe_jab', index * .15, true);
       });
     }
 

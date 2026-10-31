@@ -23,15 +23,19 @@ export class AudioSystem {
     this.howler = howler;
     this.loadErrors = new Map();
     this._baseVolume = new Map();
-    const sound = (file, options = {}) => this._track(options.volume ?? 1, new HowlClass({
-      src: [`/audio/${encodeURIComponent(file)}`], ...options,
-      onload: () => this.loadErrors.delete(file),
-      onloaderror: (_id, error) => {
-        if (!this.loadErrors.has(file)) console.error(`[Audio] No se pudo cargar /audio/${file}:`, error);
-        this.loadErrors.set(file, String(error));
-      },
-      onplayerror(id) { this.once('unlock', () => this.play(id)); }
-    }));
+    const sound = (file, options = {}) => {
+      const files = Array.isArray(file) ? file : [file];
+      const fileLabel = files.map(name => `/audio/${name}`).join(' o ');
+      return this._track(options.volume ?? 1, new HowlClass({
+        src: files.map(name => `/audio/${encodeURIComponent(name)}`), ...options,
+        onload: () => this.loadErrors.delete(files[0]),
+        onloaderror: (_id, error) => {
+          if (!this.loadErrors.has(files[0])) console.error(`[Audio] No se pudieron cargar ${fileLabel}:`, error);
+          this.loadErrors.set(files[0], String(error));
+        },
+        onplayerror(id) { this.once('unlock', () => this.play(id)); }
+      }));
+    };
     this._npcSoundFactory = sound;
     this._npcSounds = new Map();
     for (const entry of Object.values(NPC_VOICE_BANK).flat()) {
@@ -72,15 +76,16 @@ export class AudioSystem {
     };
     // Reproducción normal: sin posiciones, panners ni atenuación 3D.
     const vehicleOptions = { volume: 0, loop: true, pool: 10 };
+    const vehicleSound = (file, options) => sound([file, file.replace(/\.opus$/, '.mp3')], options);
     this.vehicleSounds = {
-      carIdle: sound('car_idling_at_a_traf.opus', vehicleOptions),
-      carDrive: sound('small_vehicle_drivin.opus', vehicleOptions),
-      busIdle: sound('car_idling_at_a_traf_bus.opus', vehicleOptions),
-      busDrive: sound('bus_vehicle_drivin.opus', vehicleOptions),
+      carIdle: vehicleSound('car_idling_at_a_traf.opus', vehicleOptions),
+      carDrive: vehicleSound('small_vehicle_drivin.opus', vehicleOptions),
+      busIdle: vehicleSound('car_idling_at_a_traf_bus.opus', vehicleOptions),
+      busDrive: vehicleSound('bus_vehicle_drivin.opus', vehicleOptions),
       // Tomar una sola pitada de cada grabación evita reproducir secuencias de casi 8 s.
-      horn1: sound('car_horn_sound1.opus', { ...vehicleOptions, loop: false, sprite: { honk: [900, 550] } }),
-      horn2: sound('car_horn_sound.opus', { ...vehicleOptions, loop: false, sprite: { honk: [1000, 600] } }),
-      horn3: sound('car_horn_sound_v3.opus', { ...vehicleOptions, loop: false, sprite: { honk: [200, 650] } })
+      horn1: vehicleSound('car_horn_sound1.opus', { ...vehicleOptions, loop: false, sprite: { honk: [900, 550] } }),
+      horn2: vehicleSound('car_horn_sound.opus', { ...vehicleOptions, loop: false, sprite: { honk: [1000, 600] } }),
+      horn3: vehicleSound('car_horn_sound_v3.opus', { ...vehicleOptions, loop: false, sprite: { honk: [200, 650] } })
     };
     const driverFiles = [
       ...[1, 3, 4, 5, 6, 7].map(n => `valentina_n${n}.mp3`),
@@ -261,7 +266,9 @@ export class AudioSystem {
     // El reclamo por el robo reemplaza la frase normal de obstrucción de ese conductor.
     const driver = this.vehicles.instances.get(car);
     if (driver) {
-      driver.cooldown = Math.max(driver.cooldown, sound.duration() + .5);
+      const cooldown = sound.duration() + .5;
+      driver.cooldown = Math.max(driver.cooldown, cooldown);
+      driver.remarkCooldown = Math.max(driver.remarkCooldown, cooldown);
     }
     return true;
   }
@@ -273,8 +280,8 @@ export class AudioSystem {
   }
 
   /** Voces de combate precargadas; respetan la mezcla y no se superponen. */
-  playNpcVoice(path, owner) {
-    if (this._paused || this.muted || !owner?.position || this._voiceActive()) return false;
+  playNpcVoice(path, owner, { allowKnockedOut = false, allowPaused = false } = {}) {
+    if ((this._paused && !allowPaused) || this.muted || !owner?.position || this._voiceActive()) return false;
     const distance = this._listenerPosition ? owner.position.distanceTo(this._listenerPosition) : 0;
     if (distance > 14) return false;
     const file = path.split('/').pop();
@@ -283,8 +290,16 @@ export class AudioSystem {
     if (sound.state() !== 'loaded') return false;
     const id = sound.play();
     sound.volume(.8 * this._level('voices') * Math.max(0, 1 - distance / 14), id);
-    this._npcVoice = { sound, id, owner };
+    this._npcVoice = { sound, id, owner, allowKnockedOut };
     return true;
+  }
+
+  playPlayerDeath(owner) {
+    const voice = NPC_VOICE_BANK.knockout.find(entry => entry.audio === '/audio/ahh.mp3');
+    if (!voice) return false;
+    if (this._npcVoice) this._npcVoice.sound.stop(this._npcVoice.id);
+    this._npcVoice = null;
+    return this.playNpcVoice(voice.audio, owner, { allowKnockedOut: true, allowPaused: true });
   }
 
   playCrowdVoice(position, listener = this._listenerPosition) {
@@ -403,7 +418,7 @@ export class AudioSystem {
     this._listenerPosition = position;
     if (this._npcVoice) {
       const v = this._npcVoice, distance = v.owner.position.distanceTo(position);
-      if (v.owner._disposed || v.owner.hp <= 0 || distance > 14 || !v.sound.playing(v.id)) {
+      if (v.owner._disposed || (v.owner.hp <= 0 && !v.allowKnockedOut) || distance > 14 || !v.sound.playing(v.id)) {
         v.sound.stop(); this._npcVoice = null;
       } else v.sound.volume(.8 * this._level('voices') * Math.max(0, 1 - distance / 14), v.id);
     }

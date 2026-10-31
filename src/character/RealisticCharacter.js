@@ -12,6 +12,7 @@ import { PALETTES } from './look.js';
 import { addGrime, addHairTone } from './weathering.js';
 import { attachAccessories } from './props.js';
 import { addHatClip, hatEdgeProfile } from './hatFit.js';
+import { pick } from '../utils/random.js';
 
 const MODEL_BASE = `${import.meta.env?.BASE_URL ?? '/'}models/`;
 const BASE = `${MODEL_BASE}personaje/`;
@@ -56,6 +57,7 @@ export const REAL_DEFAULT = {
 const loader = new GLTFLoader();
 const fbxLoader = new FBXLoader();
 const cache = new Map();
+const coveredGeometryCache = new WeakMap();
 const load = (url) => {
   if (!cache.has(url)) cache.set(url, loader.loadAsync(url));
   return cache.get(url);
@@ -91,13 +93,12 @@ export function normalizeReal(catalog, raw = {}) {
 
 /** Combinación al azar de piezas realistas */
 export function randomReal(catalog, base = {}) {
-  const any = (arr) => arr[Math.floor(Math.random() * arr.length)];
-  const sexo = base.sexo ?? any(['hombre', 'mujer']);
-  const pick = (cat) => any(optionsFor(catalog, cat, sexo)).id;
+  const pickOption = (cat) => pick(optionsFor(catalog, cat, sexo)).id;
+  const sexo = base.sexo ?? pick(['hombre', 'mujer']);
   return normalizeReal(catalog, {
-    sexo, edad: any(['joven', 'adulto', 'mayor']),
-    pelo: pick('pelo'), barba: Math.random() < 0.3 ? 'ninguna' : pick('barba'), ropa: pick('ropa'), calzado: pick('calzado'),
-    cabeza: Math.random() < 0.6 ? REAL_DEFAULT.cabeza : optionsFor(catalog, 'cabeza', sexo).length ? pick('cabeza') : REAL_DEFAULT.cabeza
+    sexo, edad: pick(['joven', 'adulto', 'mayor']),
+    pelo: pickOption('pelo'), barba: Math.random() < 0.3 ? 'ninguna' : pickOption('barba'), ropa: pickOption('ropa'), calzado: pickOption('calzado'),
+    cabeza: Math.random() < 0.6 ? REAL_DEFAULT.cabeza : optionsFor(catalog, 'cabeza', sexo).length ? pickOption('cabeza') : REAL_DEFAULT.cabeza
   });
 }
 
@@ -192,14 +193,24 @@ function attachPart(srcMesh, bones, parent, kind) {
 /** Oculta los triángulos del cuerpo tapados por la ropa (vértices originales en `hidden`). */
 function hideCovered(bodyMesh, baseIndex, hidden) {
   const src = bodyMesh.geometry;
+  if (!hidden.size) return null;
+  const key = [...hidden].sort((a, b) => a - b).join(',');
+  let variants = coveredGeometryCache.get(src);
+  if (!variants) coveredGeometryCache.set(src, variants = new Map());
+  let entry = variants.get(key);
+  if (entry) {
+    entry.references++;
+    bodyMesh.geometry = entry.geometry;
+    return { source: src, key, geometry: entry.geometry };
+  }
+
   const geo = new THREE.BufferGeometry();
-  // Esta geometría se libera por instancia: sus buffers no pueden pertenecer al caché.
   for (const [k, v] of Object.entries(src.attributes)) geo.setAttribute(k, v.clone());
   geo.morphAttributes = Object.fromEntries(Object.entries(src.morphAttributes).map(([key, values]) => [key, values.map(v => v.clone())]));
   geo.boundingSphere = src.boundingSphere;
   const vid = src.attributes._vid;
-  if (!hidden.size || !vid) {
-    geo.setIndex(baseIndex.clone());
+  if (!vid) {
+    if (baseIndex) geo.setIndex(baseIndex.clone());
   } else {
     const out = [];
     const idx = baseIndex.array;
@@ -210,7 +221,19 @@ function hideCovered(bodyMesh, baseIndex, hidden) {
     }
     geo.setIndex(out);
   }
+  entry = { geometry: geo, references: 1 };
+  variants.set(key, entry);
   bodyMesh.geometry = geo;
+  return { source: src, key, geometry: geo };
+}
+
+function releaseCoveredGeometry(reference) {
+  if (!reference) return;
+  const variants = coveredGeometryCache.get(reference.source);
+  const entry = variants?.get(reference.key);
+  if (!entry || --entry.references > 0) return;
+  entry.geometry.dispose();
+  variants.delete(reference.key);
 }
 
 // ---------- instancia ----------
@@ -281,11 +304,14 @@ async function buildInstance(catalog, look, lod = false) {
     addHairTone(o.material);
   });
   const accessories = useLod ? null : attachAccessories(root, bones, look.accesorios, wear);
-  if (bodyMesh) hideCovered(bodyMesh, bodyGltf.scene.getObjectByName(bodyMesh.name)?.geometry.index ?? bodyMesh.geometry.index, hidden);
+  const coveredGeometry = bodyMesh
+    ? hideCovered(bodyMesh, bodyGltf.scene.getObjectByName(bodyMesh.name)?.geometry.index ?? bodyMesh.geometry.index, hidden)
+    : null;
 
   const mixer = new THREE.AnimationMixer(root);
   const actions = {};
   for (const [name, clip] of Object.entries(clips)) {
+    if (useLod && !['idle', 'walk', 'run'].includes(name)) continue;
     actions[name] = mixer.clipAction(clip);
     if (['comer', 'beber', 'lanzar', 'saludo', 'golpear', 'patear', 'recibirGolpe', 'derribo', 'levantarse', 'golpe_jab', 'golpe_cross', 'patada', 'reaccion_pecho', 'reaccion_cabeza', 'caida', 'fueraCombate', 'bloquear'].includes(name)) {
       actions[name].setLoop(THREE.LoopOnce, 1);
@@ -297,7 +323,8 @@ async function buildInstance(catalog, look, lod = false) {
     actions[name].setEffectiveWeight(name === 'idle' ? 1 : 0);
   }
   if (useLod) root.traverse((o) => { if (o.isMesh) o.castShadow = false; }); // lejos: sin sombra propia
-  return { root, mixer, actions, real, accessories, phase: 0, runShare: 0, ownedGeometries: bodyMesh ? [bodyMesh.geometry] : [] };
+  return { root, mixer, actions, real, accessories, phase: 0, runShare: 0,
+    coveredGeometryRefs: coveredGeometry ? [coveredGeometry] : [] };
 }
 
 /** Solo recursos de instancia; los modelos y texturas del banco siguen compartidos. */
@@ -314,6 +341,7 @@ export function disposeRealisticInstance(instance) {
   });
   for (const material of materials) material.dispose();
   for (const skeleton of skeletons) skeleton.dispose();
+  for (const reference of instance.coveredGeometryRefs ?? []) releaseCoveredGeometry(reference);
   for (const geometry of instance.ownedGeometries ?? []) geometry.dispose();
   instance.root.removeFromParent();
 }
